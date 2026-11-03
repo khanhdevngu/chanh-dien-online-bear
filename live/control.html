@@ -41,6 +41,13 @@ button.red{background:var(--red);border-color:#b84a33}
 #people td{padding:5px 8px;border-bottom:1px solid #2e1c10}
 #people td:last-child{text-align:right;color:var(--gold);font-variant-numeric:tabular-nums}
 #log{height:220px;overflow:auto;background:#0b0604;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+details#signBox{border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:#170d08}
+details#signBox summary{cursor:pointer;font-weight:600;color:var(--gold)}
+details#signBox a{color:var(--gold)}
+.sign-body{display:grid;gap:8px;margin-top:8px}
+.sign-status{font-size:13px;padding:8px 10px;border-radius:9px;background:#0f0805;border:1px solid var(--line);overflow-wrap:anywhere}
+.sign-status.ok{border-color:var(--green);color:#9fe0b4}.sign-status.warn{border-color:#a8792a;color:#f0cf8a}
+button.tiny{flex:0 0 auto;padding:8px 10px}
 </style>
 </head>
 <body>
@@ -59,6 +66,19 @@ button.red{background:var(--red);border-color:#b84a33}
     <label for="uid">Username kênh đang live</label>
     <div class="row"><input id="uid" placeholder="@tenkenhcuaban" autocomplete="off"><button class="primary" id="btnConnect">Kết nối</button><button id="btnDisconnect">Ngắt</button></div>
     <p class="hint">Chỉ đọc sự kiện công khai của phòng live (bình luận, quà, tim). Không cần mật khẩu hay cookie TikTok. Phải bật LIVE trước rồi mới kết nối.</p>
+    <details id="signBox">
+      <summary>Nguồn đọc live · API key <span class="hint" id="signSummary"></span></summary>
+      <div class="sign-body">
+        <p class="hint">TikTok bắt buộc ký (sign) đường kết nối live. Thư viện <b>tiktok-live-connector</b> nhờ máy chủ ký <b>Euler Stream</b> làm việc này. Không có key vẫn chạy được ở gói miễn phí (giới hạn lượt); khi báo hết lượt hoặc key hết hạn thì lấy / gia hạn key tại <a href="https://www.eulerstream.com" target="_blank" rel="noopener noreferrer">eulerstream.com</a> rồi dán vào đây.</p>
+        <div class="sign-status" id="signStatus">Đang tải…</div>
+        <label for="signKey">API key mới</label>
+        <div class="row"><input id="signKey" type="password" placeholder="Dán API key Euler Stream…" autocomplete="off" spellcheck="false"><button id="btnKeyShow" type="button" class="tiny" aria-label="Hiện / ẩn key">👁</button></div>
+        <div class="row"><button class="primary" id="btnKeySave" type="button">Lưu key</button><button class="red" id="btnKeyClear" type="button">Xoá key</button></div>
+        <label for="signUrl">Máy chủ ký (để trống = mặc định)</label>
+        <div class="row"><input id="signUrl" placeholder="https://api.eulerstream.com" autocomplete="off" spellcheck="false"><button id="btnUrlSave" type="button">Lưu</button></div>
+        <p class="hint">Key chỉ lưu trên máy này tại <code>live/config.local.json</code>, không đẩy lên GitHub, không gửi sang overlay. Đổi key xong bấm <b>Kết nối</b> lại để áp dụng. Chỉ đổi máy chủ ký khi bạn tự host hoặc dùng nguồn tin cậy, vì key sẽ được gửi tới địa chỉ đó.</p>
+      </div>
+    </details>
     <button class="gold" id="btnOverlay">Mở màn hình overlay 9:16</button>
     <p class="hint">Trong TikTok LIVE Studio: Add source → Window capture → chọn cửa sổ overlay. Bấm "bật âm thanh" một lần trong cửa sổ đó.</p>
     <h2>Trong sân chùa</h2>
@@ -160,7 +180,16 @@ function connect(){
     else if (m.t==='leave'){ people.delete(m.id); renderPeople(); }
     else if (m.t==='gift'){ const p=people.get(m.id); if(p){ p.coins=m.total; renderPeople(); } }
     else if (m.t==='bots') $('btnBots').textContent = m.on ? 'Tắt bot' : 'Bật bot';
+    else if (m.t==='sign') setSign(m);
   };
+}
+function setSign(s){
+  const st=$('signStatus');
+  const src = s.isDefault ? 'Euler Stream (api.eulerstream.com)' : s.baseUrl;
+  st.className = 'sign-status ' + (s.hasKey ? 'ok' : 'warn');
+  st.textContent = `Nguồn: ${src} · ` + (s.hasKey ? `Key: ${s.keyHint} (lưu ${s.savedAt || 'trên máy'})` : 'Chưa có key, đang dùng gói miễn phí (có giới hạn lượt)');
+  $('signSummary').textContent = s.hasKey ? `· key ${s.keyHint}` : '· chưa có key';
+  $('signUrl').value = s.isDefault ? '' : s.baseUrl;
 }
 connect();
 
@@ -178,6 +207,11 @@ $('btnChant').onclick = () => send('chant');
 $('btnBell').onclick = () => send('bell');
 $('btnMo').onclick = () => send('mo');
 for (const k of SETTING_IDS) $(k).addEventListener('change', () => send('settings', { settings: readSettings() }));
+$('btnKeyShow').onclick = () => { const i=$('signKey'); i.type = i.type==='password' ? 'text' : 'password'; };
+$('btnKeySave').onclick = () => { const k=$('signKey').value.trim(); if (!k) { $('signKey').focus(); return; } send('sign', { apiKey: k }); $('signKey').value=''; $('signKey').type='password'; };
+$('signKey').onkeydown = e => { if (e.key==='Enter') $('btnKeySave').click(); };
+$('btnKeyClear').onclick = () => { if (confirm('Xoá API key đã lưu trên máy này?')) send('sign', { clearKey: true }); };
+$('btnUrlSave').onclick = () => send('sign', { baseUrl: $('signUrl').value.trim() });
 </script>
 </body>
 </html>

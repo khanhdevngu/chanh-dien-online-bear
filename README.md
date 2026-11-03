@@ -39,6 +39,14 @@ Chưa live vẫn thử được: dùng **Thử tương tác**, **Đổ người 
 - **Tặng quà**: banner xướng tên, giọng đọc hồi hướng (lấy lời nguyện từ bình luận gần nhất của người đó nếu có), hiệu ứng theo giá trị quà, cộng điểm vào bảng Công Đức.
 - **Thả tim**: tim bay trên đầu nhân vật.
 
+## Nguồn đọc live & API key
+
+- Sự kiện live (bình luận, quà, tim) được đọc bằng thư viện cộng đồng **`tiktok-live-connector`**. TikTok bắt buộc ký đường kết nối live, nên thư viện nhờ máy chủ ký **Euler Stream** (`https://api.eulerstream.com`) làm việc này.
+- **Không có key vẫn chạy** ở gói miễn phí, nhưng bị giới hạn lượt. Khi nhật ký báo *hết lượt / rate limit* hoặc *key sai / hết hạn*, vào [eulerstream.com](https://www.eulerstream.com) lấy hoặc gia hạn API key.
+- **Thay key ngay trên giao diện:** bảng điều khiển → mục **1 · Kết nối TikTok LIVE** → mở **Nguồn đọc live · API key** → dán key → **Lưu key** → bấm **Kết nối** lại. Có nút **Xoá key** và ô **Máy chủ ký** (để trống là mặc định; chỉ đổi khi tự host máy chủ ký, vì key sẽ được gửi tới địa chỉ đó).
+- Key chỉ lưu trên máy phát ở `live/config.local.json` (đã nằm trong `.gitignore`, server không phục vụ file này qua HTTP, overlay không bao giờ nhận được key; bảng điều khiển chỉ hiện 4 ký tự cuối).
+- Vẫn dùng được biến môi trường `SIGN_API_KEY` / `SIGN_API_URL` nếu thích; giá trị lưu trên giao diện sẽ được ưu tiên.
+
 ## Bảo mật
 
 Dự án được viết để ai tải về chạy cũng an toàn mặc định:

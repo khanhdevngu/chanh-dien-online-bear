@@ -139,6 +139,72 @@ function scheduleChant(){ clearInterval(chantTimer); if (settings.autoChant) cha
 scheduleChant();
 
 /* --------------------------------------------------------------- TikTok */
+// Where live events come from: tiktok-live-connector opens TikTok's own WebSocket, but that URL has to be
+// signed first. The library asks the Euler Stream sign server (https://api.eulerstream.com) for the signature.
+// Without a key it uses the free tier (rate limited); a key from eulerstream.com raises the limit.
+// The key / server URL are edited from the control panel and stored only on this PC in live/config.local.json
+// (git-ignored, never served over HTTP, never sent to overlays). Env SIGN_API_KEY / SIGN_API_URL still work.
+const CONFIG_FILE = path.join(__dirname, 'config.local.json');
+const DEFAULT_SIGN_URL = 'https://api.eulerstream.com';
+const signCfg = { apiKey: process.env.SIGN_API_KEY || '', baseUrl: process.env.SIGN_API_URL || DEFAULT_SIGN_URL, savedAt: '' };
+try {
+  const j = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  if (typeof j.signApiKey === 'string') signCfg.apiKey = cleanKey(j.signApiKey);
+  if (typeof j.signApiUrl === 'string') signCfg.baseUrl = cleanUrl(j.signApiUrl) || DEFAULT_SIGN_URL;
+  if (typeof j.savedAt === 'string') signCfg.savedAt = j.savedAt.slice(0, 40);
+} catch {}
+function cleanKey(v){ const k = String(v || '').trim().slice(0, 256); return /^[\w\-.:+/=~]*$/.test(k) ? k : ''; }
+function cleanUrl(v){
+  const s = String(v || '').trim().slice(0, 300); if (!s) return '';
+  try { const u = new URL(s); if (u.protocol !== 'https:' && u.protocol !== 'http:') return null; return u.origin + u.pathname.replace(/\/+$/, ''); } catch { return null; }
+}
+function signPublic(){
+  const k = signCfg.apiKey;
+  return { t:'sign', hasKey: !!k, keyHint: k ? '••••' + k.slice(-4) : '', baseUrl: signCfg.baseUrl, isDefault: signCfg.baseUrl === DEFAULT_SIGN_URL, savedAt: signCfg.savedAt };
+}
+function saveSignCfg(){
+  signCfg.savedAt = new Date().toLocaleString('vi-VN');
+  const data = { signApiKey: signCfg.apiKey, signApiUrl: signCfg.baseUrl === DEFAULT_SIGN_URL ? '' : signCfg.baseUrl, savedAt: signCfg.savedAt };
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+function onSign(m){
+  if (m.clearKey){ signCfg.apiKey = ''; addLog('🔑 Đã xoá API key, quay về gói miễn phí'); }
+  else if (typeof m.apiKey === 'string' && m.apiKey.trim()){
+    const k = cleanKey(m.apiKey);
+    if (!k){ addLog('🔑 API key có ký tự lạ, không lưu'); return; }
+    signCfg.apiKey = k; addLog(`🔑 Đã lưu API key mới (••••${k.slice(-4)})`);
+  }
+  else if (typeof m.baseUrl === 'string'){
+    const u = m.baseUrl.trim() ? cleanUrl(m.baseUrl) : DEFAULT_SIGN_URL;
+    if (!u){ addLog('🔑 Địa chỉ máy chủ ký không hợp lệ (phải là http/https)'); return; }
+    signCfg.baseUrl = u; addLog(`🔑 Máy chủ ký: ${u}`);
+  }
+  else return;
+  try { saveSignCfg(); } catch (e) { addLog('🔑 Không ghi được config.local.json: ' + e.message); }
+  broadcast(signPublic(), 'control');
+  if (tiktok || tiktokState.status === 'error') addLog('🔑 Bấm Kết nối lại để dùng cấu hình mới');
+}
+function applySignConfig(SignConfig){
+  if (!SignConfig) return;
+  const key = signCfg.apiKey || undefined;
+  if (SignConfig.apiKey !== key || SignConfig.basePath !== signCfg.baseUrl){
+    SignConfig.apiKey = key; SignConfig.basePath = signCfg.baseUrl;
+    SignConfig.cachedInstance = undefined;                     // the library caches its client; drop it so the new key is used
+  }
+}
+function explainTikTokError(e){
+  const name = e?.name || e?.constructor?.name || '';
+  const msg = String(e?.message || e);
+  if (/RateLimit/i.test(name) || /\b429\b|rate.?limit/i.test(msg))
+    return `${msg} → Máy chủ ký báo hết lượt. ${signCfg.apiKey ? 'Key có thể đã hết hạn / hết quota: gia hạn hoặc thay key' : 'Gói miễn phí đã hết lượt: lấy API key'} tại eulerstream.com rồi dán vào mục "Nguồn đọc live · API key".`;
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid.*key|api.?key/i.test(msg))
+    return `${msg} → API key sai hoặc đã hết hạn. Kiểm tra / thay key trong mục "Nguồn đọc live · API key".`;
+  if (/Premium/i.test(name)) return `${msg} → Tính năng này cần gói trả phí của Euler Stream.`;
+  if (/UserOffline/i.test(name) || /offline|not.*live|isn'?t online|not online/i.test(msg)) return `${msg} → Kênh chưa bật LIVE hoặc sai username.`;
+  if (/SignAPI|Sign/i.test(name)) return `${msg} → Lỗi máy chủ ký (${signCfg.baseUrl}). Thử lại sau, hoặc kiểm tra key / địa chỉ máy chủ ký.`;
+  return msg;
+}
+
 let TikTokLib = null;
 async function connectTikTok(uniqueId){
   uniqueId = String(uniqueId || '').trim().replace(/^.*tiktok\.com\/@?/i, '').replace(/^@/, '').replace(/\/.*$/, '');
@@ -147,7 +213,9 @@ async function connectTikTok(uniqueId){
   tiktokState = { status: 'connecting', uniqueId, error: '' }; broadcast({ t:'tiktok', ...tiktokState });
   try {
     TikTokLib ||= await import('tiktok-live-connector');
-    const { TikTokLiveConnection, WebcastEvent, ControlEvent } = TikTokLib;
+    const { TikTokLiveConnection, WebcastEvent, ControlEvent, SignConfig } = TikTokLib;
+    applySignConfig(SignConfig);
+    addLog(`Đang kết nối @${uniqueId} qua ${signCfg.baseUrl === DEFAULT_SIGN_URL ? 'Euler Stream' : signCfg.baseUrl} (${signCfg.apiKey ? 'có key ••••' + signCfg.apiKey.slice(-4) : 'gói miễn phí'})`);
     const conn = new TikTokLiveConnection(uniqueId, { enableExtendedGiftInfo: true, processInitialData: false });
     const av = u => u?.profilePicture?.url?.[0] || u?.profilePicture?.urlList?.[0] || u?.avatarThumb?.urlList?.[0] || u?.avatarThumb?.url?.[0] || '';
     const nm = u => u?.nickname || u?.uniqueId || 'ẩn danh';
@@ -169,7 +237,7 @@ async function connectTikTok(uniqueId){
     tiktokState = { status: 'connected', uniqueId, error: '', roomId: st?.roomId || '' };
     addLog(`✅ Đã kết nối live @${uniqueId}`);
   } catch (e) {
-    tiktokState = { status: 'error', uniqueId, error: String(e?.message || e) };
+    tiktokState = { status: 'error', uniqueId, error: explainTikTokError(e) };
     addLog(`❌ Không kết nối được @${uniqueId}: ${tiktokState.error}`);
   }
   broadcast({ t:'tiktok', ...tiktokState });
@@ -204,6 +272,7 @@ function onControl(m){
       applySettings(m.settings || {});
       scheduleChant(); broadcast({ t:'settings', settings, cap: capacity() }); break;
     case 'bots': setBots(!!m.on, +m.n || 12, m.pace); break;
+    case 'sign': onSign(m); break;
   }
 }
 
@@ -252,6 +321,8 @@ function setBots(on, n, pace){
 //    same browser cannot send control commands
 //  • static files: only /assets and /live, no dot-files, no node_modules, no server source, no path escapes
 //  • no TikTok password, cookie or session is ever used or stored; only public room events are read
+//  • the optional Euler Stream API key lives in live/config.local.json: git-ignored, blocked by resolveStatic
+//    (no .json under /live is served), and only ever sent to control sockets as a masked hint
 const HOST = process.env.HOST || '127.0.0.1';
 const MIME = { '.html':'text/html; charset=utf-8', '.js':'text/javascript', '.css':'text/css', '.json':'application/json',
   '.png':'image/png', '.jpg':'image/jpeg', '.webp':'image/webp', '.mp3':'audio/mpeg', '.svg':'image/svg+xml', '.ico':'image/x-icon' };
@@ -291,7 +362,7 @@ function broadcast(msg, only){ const s = JSON.stringify(msg); for (const c of ws
 wss.on('connection', (ws, req) => {
   ws.role = new URL(req.url, 'http://x').searchParams.get('role') === 'control' ? 'control' : 'overlay';
   ws.send(JSON.stringify(snapshot()));
-  if (ws.role === 'control') ws.send(JSON.stringify({ t:'logs', lines: log }));
+  if (ws.role === 'control') { ws.send(JSON.stringify({ t:'logs', lines: log })); ws.send(JSON.stringify(signPublic())); }
   ws.on('message', buf => {
     if (ws.role !== 'control') return;                          // overlays only listen
     try { const m = JSON.parse(buf); if (m && m.t === 'ctl') onControl(m); } catch (e) { addLog('Lệnh lỗi: ' + e.message); }
